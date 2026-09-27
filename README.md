@@ -111,23 +111,24 @@ Screenshots use anonymized host names, addresses and container names.
 ```bash
 cp .env_example .env && chmod 600 .env       # every setting is described in .env_example
 python3 server.py                            # settings from .env (default 127.0.0.1:8080)
-python3 server.py env_uk                     # settings from .env_uk (also accepts .env_uk or a path)
+python3 server.py env_prod                   # settings from .env_prod (also accepts .env_prod or a path)
 python3 server.py --port 9000 --host 0.0.0.0 # flags override the settings file
 ```
 
 ### Docker
 
 ```bash
-docker compose up -d --build            # both dashboards: galaxy (.env, :8080) and galaxy-uk (.env_uk, :8090)
-docker compose up -d galaxy             # only one of them
+cp .env_example .env && chmod 600 .env
+docker compose up -d --build            # service galaxy: settings from .env, http://127.0.0.1:8080
 ```
 
 Settings reach the container in one of three ways, all shown in `docker-compose.yml`:
 
-1. `env_file: .env` — the settings file becomes environment variables (the default services);
-2. a read-only mount, `./.env_uk:/app/.env_uk:ro`, plus `command: ["env_uk"]` (service `galaxy-uk-mounted`,
-   started with `--profile mounted`);
-3. `environment:` values in the compose file or taken from the shell.
+1. `env_file: .env` — the settings file becomes environment variables (service `galaxy`);
+2. a read-only mount, `./.env_prod:/app/.env_prod:ro`, plus `command: ["env_prod"]` (commented service
+   `galaxy-prod`, handy for a second Zabbix on another port); the container user (uid 10001) must be able
+   to read the mounted file, so with `chmod 600` prefer `env_file`;
+3. `environment:` values in the compose file or taken from the shell (commented service `galaxy-inline`).
 
 Plain `docker run` works the same way: `--env-file .env`, or `-v "$PWD/.env:/app/.env:ro"`, or `-e KEY=VALUE`.
 Settings files are excluded from the image (`.dockerignore`). Inside the container the server always listens on
@@ -144,14 +145,12 @@ from Google Fonts, so it needs internet access.
 
 Credentials and the listen address come from `.env`, as `KEY=value` lines (preferred, docker-compatible) or as
 `"KEY": "value"` pairs.
-Real environment variables override `.env`, and command-line flags override both:
+Real environment variables override `.env`, and command-line flags override both. `.env_example` describes
+every key, including how to create a read-only API token in Zabbix:
 
 ```
 ZABBIX_URL=https://zabbix.example.com
-ZABBIX_USER=api-user
-ZABBIX_PASSWORD=secret
-# or instead of user/password:
-# ZABBIX_TOKEN=...
+ZABBIX_TOKEN=...        # API token (recommended); or ZABBIX_USER + ZABBIX_PASSWORD
 GALAXY_HOST=127.0.0.1   # listen address; 0.0.0.0 exposes the dashboard to the network without a login
 GALAXY_PORT=8080        # listen port
 ZABBIX_PROXY=           # optional: http://[user:pass@]proxy:3128 for Zabbix API calls; empty = direct
