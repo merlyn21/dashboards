@@ -1,0 +1,30 @@
+# Zabbix Galaxy — two dashboards from one image.
+#
+#   docker compose up -d --build        # both
+#   docker compose up -d galaxy         # only the main Zabbix
+#
+# Settings reach the container in one of three ways (pick one per service):
+#   1. env_file:    the KEY=VALUE settings file becomes environment variables (used below);
+#   2. volumes:     mount the file into /app and pass its name as the command (see galaxy-uk-mounted);
+#   3. environment: write the values right here (see the commented example at the end).
+# Inside the container the server always listens on 0.0.0.0:8080 (the image sets
+# GALAXY_HOST / GALAXY_PORT, and `environment:` below wins over env_file);
+# the published host port is chosen under `ports:`.
+
+x-galaxy: &galaxy
+  build: .
+  image: zabbix-galaxy:latest
+  restart: unless-stopped
+  environment:
+    GALAXY_HOST: 0.0.0.0
+    GALAXY_PORT: "8080"
+
+services:
+  # Way 1: variables from .env (ZABBIX_*, GALAXY_LANG, GALAXY_SERVICES, ...)
+  galaxy:
+    <<: *galaxy
+    container_name: zabbix-galaxy
+    env_file: .env
+    ports:
+      - "127.0.0.1:8080:8080"   # drop 127.0.0.1: to open it to the network (the dashboard has no login)
+

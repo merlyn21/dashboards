@@ -1,0 +1,142 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Zabbix Galaxy</title>
+  <meta name="description" content="Хосты Zabbix в виде планет: кольца показывают загрузку CPU, RAM и диска, спутники показывают Docker, PostgreSQL и другие сервисы.">
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><circle cx='16' cy='16' r='7' fill='%237fb3d5'/><ellipse cx='16' cy='16' rx='14' ry='4' fill='none' stroke='%23199e70' stroke-width='2' transform='rotate(-20 16 16)'/></svg>">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;600&family=Space+Grotesk:wght@500;600;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="style.css">
+  <script type="importmap">
+  {
+    "imports": {
+      "three": "https://cdn.jsdelivr.net/npm/three@0.170.0/build/three.module.js",
+      "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.170.0/examples/jsm/"
+    }
+  }
+  </script>
+</head>
+<body>
+  <div id="scene"></div>
+
+  <aside id="left" class="glass">
+    <div class="brand">
+      <div class="logo" aria-hidden="true"></div>
+      <div>
+        <h1>Zabbix Galaxy</h1>
+        <div class="muted small"><span id="conn" class="conn"></span>обновлено <span id="updated">—</span></div>
+      </div>
+      <button id="collapse" class="icon-btn" title="Свернуть панель" aria-label="Свернуть панель">‹</button>
+    </div>
+
+    <div id="summary" class="summary"></div>
+
+    <label class="search">
+      <input id="search" type="search" placeholder="Поиск: имя, IP, группа  ( / )" autocomplete="off">
+    </label>
+
+    <section>
+      <h4>Раскладка</h4>
+      <select id="layout">
+        <option value="state">По состоянию — проблемные ближе к ядру</option>
+        <option value="free">Свободная галактика</option>
+      </select>
+    </section>
+
+    <section>
+      <h4>Размер планеты</h4>
+      <select id="sizeBy"></select>
+    </section>
+
+    <section>
+      <h4>Метрики у планет</h4>
+      <select id="metrics">
+        <option value="card">Карточка над планетой</option>
+        <option value="rings">Кольца вокруг планеты</option>
+        <option value="both">Карточка и кольца</option>
+        <option value="none">Не показывать</option>
+      </select>
+    </section>
+
+    <section>
+      <h4>Отображение</h4>
+      <label class="tg"><input type="checkbox" data-toggle="satellites"><span></span>Спутники и Docker-луны</label>
+      <label class="tg"><input type="checkbox" data-toggle="flows"><span></span>Потоки трафика к ядру</label>
+      <label class="tg"><input type="checkbox" data-toggle="users"><span></span>Число пользователей под планетой</label>
+      <label class="tg"><input type="checkbox" data-toggle="alerts"><span></span>Оповещения о событиях</label>
+      <label class="tg"><input type="checkbox" data-toggle="summary"><span></span>Сводка галактики справа</label>
+      <label class="tg"><input type="checkbox" data-toggle="onlyProblems"><span></span>Только проблемные</label>
+      <label class="tg"><input type="checkbox" data-toggle="autoRotate"><span></span>Автовращение</label>
+      <label class="tg"><input type="checkbox" data-toggle="bloom"><span></span>Свечение</label>
+      <label class="tg"><input type="checkbox" data-toggle="dust"><span></span>Звёздная пыль</label>
+      <div class="row2">
+        <label>Подписи хостов
+          <select id="labels"><option value="all">все</option><option value="hover">при наведении</option></select>
+        </label>
+        <label>Подписи спутников
+          <select id="satLabels"><option value="focus">у выбранного</option><option value="all">все</option></select>
+        </label>
+      </div>
+      <label class="inline">Обновлять каждые
+        <select id="refresh"><option value="15">15 с</option><option value="30">30 с</option><option value="60">1 мин</option><option value="300">5 мин</option></select>
+      </label>
+    </section>
+
+    <section>
+      <h4>Группы</h4>
+      <div id="groups" class="chips"></div>
+    </section>
+
+    <section>
+      <h4>Хосты <span id="host-count" class="muted"></span></h4>
+      <ul id="hosts" class="hosts"></ul>
+    </section>
+
+    <section class="legend-box">
+      <h4>Легенда</h4>
+      <div class="muted small">Поверхность планеты = операционная система</div>
+      <ul id="legend-os" class="legend-list os-legend"></ul>
+      <div class="muted small">Метрики: полоса и число = % загрузки, ≥80% жёлтым, ≥90% красным</div>
+      <ul id="legend-rings" class="legend-list"></ul>
+      <div class="muted small">Сияние вокруг планеты = худшая проблема</div>
+      <ul id="legend-halo" class="legend-list"></ul>
+      <div class="muted small">Потоки трафика: <span style="color:#6da7ec">синие частицы летят к планете — входящий</span>,
+        <span style="color:#ec835a">оранжевые летят к ядру — исходящий</span>. Толщина, число и скорость частиц растут с объёмом
+        (логарифмическая шкала). Ядро — условный «внешний мир», а не реальный узел сети.</div>
+      <div class="muted small">Оповещения: новая проблема (Average и ниже) или новый вход — планета вспыхивает цветом
+        события, свечение и сокращающееся кольцо гаснут за 3 минуты, плашка справа вверху держится столько же. High и Disaster — плашка висит,
+        пока проблема не решена, планета пульсирует красным.</div>
+      <div class="muted small">Значок под планетой — сколько пользователей сейчас залогинено (Linux: system.users.num,
+        Windows: RDP-сессии, если есть такая метрика).</div>
+      <div class="muted small">Маленькие синие луны — Docker-контейнеры: размер = память, яркость = CPU, красная — остановлен</div>
+      <div class="muted small">Искусственные спутники — обнаруженные сервисы: 🐬 MySQL (бирюзовый, главный сервис), 🐘 PostgreSQL (синий корпус), ▣ 1С (жёлтый),
+        💽 SMART (серебристый), ⚙ службы (золотистый), ◎ Zabbix (красный). Огонёк: зелёный редко мигает — ОК,
+        жёлтый или красный часто мигает — есть проблемы.</div>
+    </section>
+  </aside>
+
+  <button id="home" class="glass home-btn" title="Вернуться к галактике (Esc или клик по пустому месту)">◎ Вся галактика</button>
+
+  <div id="overlay" class="overlay"></div>
+
+  <aside id="detail" class="glass">
+    <div class="panel-body"></div>
+  </aside>
+
+  <div id="hovercard" class="glass hovercard hidden"></div>
+
+  <div id="alerts" class="alerts" aria-live="polite"></div>
+
+  <aside id="summary-panel" class="side-panel" aria-label="Сводка галактики">
+    <button class="icon-btn sm-toggle" title="Свернуть / развернуть сводку" aria-label="Свернуть сводку">›</button>
+    <div class="sm-mini"></div>
+    <div class="panel-body"></div>
+  </aside>
+
+  <noscript>Для работы нужен JavaScript и WebGL.</noscript>
+  <script type="module" src="js/main.js"></script>
+</body>
+</html>
