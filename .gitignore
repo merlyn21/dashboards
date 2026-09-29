@@ -1,9 +1,9 @@
-# Real settings files hold Zabbix credentials: keep them out of git.
-# Only .env_example is committed.
+# Real settings files hold credentials. Only the examples are committed.
 .env
-.env*
+.env.*
 *.env
 !.env_example
+!.env.example
 
 __pycache__/
 *.pyc

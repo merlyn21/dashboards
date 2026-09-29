@@ -1,0 +1,102 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Карта соединений</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Exo+2:wght@400;600;700&family=Golos+Text:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+<canvas id="base" class="layer"></canvas>
+<canvas id="fx" class="layer" aria-label="Карта соединений"></canvas>
+
+<div class="overlay">
+  <header class="plate topbar" aria-label="Состояние роутера">
+    <div class="cell id"><span class="k" id="r-board">MikroTik</span><span class="v"><span class="dot" id="r-dot"></span><span id="r-name">Router</span></span></div>
+    <div class="cell"><span class="k">RouterOS</span><span class="v" id="r-ver">…</span></div>
+    <div class="cell"><span class="k">Без перезагрузки</span><span class="v" id="r-up">…</span></div>
+    <div class="cell"><span class="k">Процессор</span><span class="v" id="r-cpu">…</span><span class="meter"><i id="r-cpu-m"></i></span></div>
+    <div class="cell"><span class="k">Память</span><span class="v" id="r-mem">…</span><span class="meter"><i id="r-mem-m"></i></span></div>
+    <div class="cell"><span class="k">Внешний IP</span><span class="v mono-v" id="r-wan-ip">…</span></div>
+    <div class="cell wan"><span class="k" id="r-wan-k">Канал WAN</span><span class="pair"><span class="v in" id="r-in">…</span><span class="v out" id="r-out">…</span></span></div>
+    <div class="cell"><span class="k">Загрузка канала</span><span class="v" id="r-util">…</span><span class="meter"><i id="r-util-m"></i></span></div>
+    <div class="cell"><span class="k">Соединения</span><span class="v" id="r-conn">…</span></div>
+    <div class="cell"><span class="k">Клиенты DHCP</span><span class="v" id="r-dhcp">…</span></div>
+    <div class="cell tunnels" id="r-tun-cell"><span class="k">Туннели</span><span class="v" id="r-tun"></span></div>
+    <div class="spacer"></div>
+    <div class="cell poll"><span class="k" id="r-poll-k">опрос по API</span><span class="v"><span class="mode-dot" id="mode-dot"></span><span id="mode-label">Подключение…</span></span></div>
+  </header>
+
+  <div class="left-col">
+  <section class="plate who" id="who-plate" aria-label="Кто на роутере">
+    <button class="ports-toggle" id="who-toggle" aria-expanded="true" aria-controls="who-body">
+      <h2>Кто на роутере</h2><span class="chev" aria-hidden="true"></span>
+    </button>
+    <p class="note" id="who-sub">Загрузка…</p>
+    <div id="who-body">
+      <div id="who-sessions"></div>
+      <div class="section" id="who-events-title">Входы за последний час</div>
+      <div id="who-events"></div>
+    </div>
+  </section>
+
+  <section class="plate ports collapsed" id="ports-plate" aria-label="Порты роутера, доступные из интернета">
+    <button class="ports-toggle" id="ports-toggle" aria-expanded="false" aria-controls="ports-body">
+      <h2>Порты роутера из интернета</h2><span class="chev" aria-hidden="true"></span>
+    </button>
+    <p class="note" id="ports-sub">Загрузка…</p>
+    <div id="ports-body" hidden>
+      <ul class="port-list" id="ports"></ul>
+      <div class="section" id="conn-title">Сейчас подключены к роутеру</div>
+      <div id="conn-now"></div>
+      <p class="note">Вывод по настройкам роутера: сервис включён, правила <span class="mono">input</span> для WAN, списки «Available From». Числа справа — подключения сейчас и источники за последний час.</p>
+    </div>
+  </section>
+  </div>
+
+  <aside class="plate right" aria-label="Подробности">
+    <div class="tabs" role="tablist">
+      <button role="tab" data-tab="dest" aria-selected="true">Направления</button>
+      <button role="tab" data-tab="devices" aria-selected="false">Устройства</button>
+      <button role="tab" data-tab="countries" aria-selected="false">Страны</button>
+      <button role="tab" data-tab="perimeter" aria-selected="false">Периметр</button>
+    </div>
+    <div class="tab-body" id="tab-body" role="tabpanel"></div>
+  </aside>
+
+  <div class="bottom">
+    <footer class="plate legend-plate">
+      <ul class="legend" id="legend"></ul>
+      <p class="note">Размер точек и толщина дуг: скорость соединений за последний интервал опроса. Место и организация: DB-IP (город, ASN). Производитель устройства: реестр IEEE OUI. <a href="https://db-ip.com" target="_blank" rel="noopener">IP Geolocation by DB-IP</a></p>
+    </footer>
+    <div class="plate ticker">
+      <div class="tick-head">
+        <span class="tick-title">Новые соединения</span>
+        <div class="seg" role="radiogroup" aria-label="Какие соединения показывать">
+          <button role="radio" data-dir="all" aria-checked="true">Все</button>
+          <button role="radio" data-dir="in" aria-checked="false">Входящие</button>
+          <button role="radio" data-dir="out" aria-checked="false">Исходящие</button>
+          <button role="radio" data-dir="scan" aria-checked="false">Сканы</button>
+        </div>
+      </div>
+      <div class="tick-list" id="ticker" aria-live="polite"></div>
+    </div>
+    <div class="controls">
+      <select id="device" aria-label="Устройство"><option value="">Все устройства</option></select>
+      <button id="btn-reset">Весь мир</button>
+    </div>
+  </div>
+</div>
+
+<div class="hover" id="hover" hidden></div>
+<div class="card" id="card" hidden></div>
+<div class="toast" id="toast" hidden></div>
+
+<script src="https://cdn.jsdelivr.net/npm/d3@7/dist/d3.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/topojson-client@3/dist/topojson-client.min.js"></script>
+<script src="app.js"></script>
+</body>
+</html>

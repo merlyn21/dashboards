@@ -1,0 +1,12 @@
+# Secrets and data stay out of the image: .env is mounted at run time, databases go to volumes.
+.env
+geo/
+oui/
+__pycache__/
+*.pyc
+.git/
+.gitignore
+.dockerignore
+start.bat
+start.sh
+README.md

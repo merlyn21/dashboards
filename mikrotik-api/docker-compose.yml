@@ -1,0 +1,33 @@
+# MikroTik connection map.
+#   cp .env.example .env    # router address and API user
+#   docker compose up -d --build
+#   docker compose logs -f  # first start downloads ~95 MB of databases, about two minutes
+# Then open http://127.0.0.1:8787
+services:
+  map:
+    build: .
+    image: mikrotik-map
+    container_name: mikrotik-map
+    restart: unless-stopped
+    # Run as the owner of this folder, so the service can write the databases into ./geo and ./oui.
+    # Set MAP_UID/MAP_GID (output of `id -u` / `id -g`) if yours are not 1000.
+    user: "${MAP_UID:-1000}:${MAP_GID:-1000}"
+    volumes:
+      # Settings and the API password: mounted read-only, never baked into the image.
+      - ./.env:/app/.env:ro
+      # Databases live next to the project, the same folders the service uses without Docker.
+      - ./geo:/app/geo
+      - ./oui:/app/oui
+    ports:
+      # This machine only. For the whole LAN use "8787:8787".
+      - "127.0.0.1:8787:8787"
+    environment:
+      # Overrides for .env, in upper case. The container must listen on all interfaces.
+      HTTP_HOST: 0.0.0.0
+      # POLL_INTERVAL: "30"
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+

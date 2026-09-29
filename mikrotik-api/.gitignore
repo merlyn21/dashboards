@@ -1,0 +1,10 @@
+.env
+geo/*.starts
+geo/*.ends
+geo/*.idx
+geo/*.values.json
+__pycache__/
+geo/*.csv.gz
+geo/*.part
+oui/oui.txt
+oui/*.part
