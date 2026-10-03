@@ -729,3 +729,33 @@ body.has-selection .tier-label { opacity: .25; }
 .pt-sub { display: flex; gap: 10px; margin: 2px 0 0 13px; font-size: 11px; color: var(--text-3); font-variant-numeric: tabular-nums; }
 .pt-sub span[style]::first-letter { color: var(--c); }
 .pt-sub span:last-child { margin-left: auto; }
+
+/* Network dependencies (galaxy.uplink / galaxy.port tags) */
+.pl-dep { font: 500 10px/1.3 var(--font); color: var(--text-3); font-style: italic; }
+.ph-link { margin-top: 6px; font-size: 12px; color: var(--text-3); }
+.ph-link a { color: var(--accent); cursor: pointer; text-decoration: none; }
+.ph-link a:hover { text-decoration: underline; }
+.ph-link b { color: var(--text-2); font-weight: 600; }
+.ph-link.warn { color: #ec835a; }
+.pt-client { margin-left: 6px; color: var(--accent); font-size: 11px; font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.sm-deps a { color: var(--accent); cursor: pointer; }
+.sm-deps a.off { color: var(--text-3); text-decoration: line-through; }
+.sm-warn { margin-top: 6px; font-size: 11.5px; color: #fab219; }
+.sm-deps .sm-l { white-space: normal; overflow: visible; }
+
+/* Centre switcher: whole picture / Zabbix galaxy / systems around uplinks */
+.centers {
+  position: fixed; top: 12px; left: 50%; transform: translateX(-50%); z-index: 4;
+  display: flex; gap: 4px; padding: 4px; border-radius: 999px;
+}
+.centers.hidden, body.has-selection .centers { display: none; }
+.centers button {
+  border: 0; background: none; color: var(--text-2); padding: 6px 12px; border-radius: 999px; cursor: pointer;
+  font: 500 12.5px/1 var(--font); white-space: nowrap;
+}
+.centers button:hover { background: rgba(255, 255, 255, 0.08); color: var(--text); }
+.centers button.active { background: rgba(134, 182, 239, 0.18); color: var(--text); box-shadow: inset 0 0 0 1px rgba(134, 182, 239, 0.45); }
+
+/* Ping-only devices: text rows instead of metric bars on the planet card */
+.pl-ping .pm { grid-template-columns: 52px 1fr; }
+.pl-ping .pm-v.wide { text-align: right; white-space: nowrap; }

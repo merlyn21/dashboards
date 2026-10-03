@@ -1,0 +1,15 @@
+# Names for addresses. Copy to names.conf (or set names_file in .env). Re-read on change, no restart.
+#
+# address  name  [type]
+#   address: MAC (best for LAN devices: survives an IP change), IP (v4 or v6) or network
+#   name:    in quotes if it has spaces
+#   type:    pc, phone, nas, server, camera, printer, tv, iot, ap, speaker, vacuum
+# A network names every address in it with the host part: "VPN .5".
+# Order: MAC, exact IP, the narrowest network, OpenVPN client, /etc/hosts, reverse DNS, maker by MAC.
+# Internet addresses may be named too: they show instead of the organization.
+
+# aa:bb:cc:11:22:33     "NAS в кладовке"   nas
+# 192.168.1.20          Принтер            printer
+# 192.168.1.30          "Камера двор"      camera
+# 10.8.0.0/24           VPN                pc
+# 203.0.113.10          "Офис Москва"

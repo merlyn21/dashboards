@@ -51,7 +51,21 @@ export class SummaryPanel {
 
     // Traffic
     const tot = (h) => (h.net_in || 0) + (h.net_out || 0);
-    const netIn = live.reduce((s, h) => s + (h.net_in || 0), 0), netOut = live.reduce((s, h) => s + (h.net_out || 0), 0);
+    // Clients' traffic already passes through their uplink: count only hosts without one.
+    const edge = live.filter((h) => !h.uplink);
+    const netIn = edge.reduce((s, h) => s + (h.net_in || 0), 0), netOut = edge.reduce((s, h) => s + (h.net_out || 0), 0);
+
+    // Network dependencies (galaxy.uplink tags)
+    const byId = new Map(hosts.map((h) => [h.id, h]));
+    const hubs = hosts.filter((h) => h.clients?.length);
+    const netDeps = hubs.map((hub) => {
+      const cl = hub.clients.map((id) => byId.get(id)).filter(Boolean);
+      const down = cl.filter((c) => c.state !== 'online').length;
+      return `<li data-host="${hub.id}"><b>${esc(hub.name)}</b>
+        <span class="sm-l">${cl.map((c) => `<a data-host="${c.id}" class="${c.state !== 'online' ? 'off' : ''}">${esc(c.name)}</a>`).join(', ')}</span>
+        <span class="pa">${down ? tr(`${down} нет связи`, `${down} down`) : `${cl.length}`}</span></li>`;
+    }).join('');
+    const warns = z.topology_warnings || [];
     const byNet = [...live].filter(tot).sort((a, b) => tot(b) - tot(a));
     const lo = byNet.length ? tot(byNet.at(-1)) : 0, hi = byNet.length ? tot(byNet[0]) : 0;
     const netRows = byNet.slice(0, 4).map((h) => {
@@ -112,6 +126,12 @@ export class SummaryPanel {
         <ul class="sm-belts">${belts.map((b) => `<li><i style="--c:${b.color}"></i><span>${b.short}</span><b>${b.hosts.length}</b>
           <em>${b.hosts.map((h) => `<a data-host="${h.id}">${esc(h.name)}</a>`).join(', ')}</em></li>`).join('')}</ul>
       </section>
+
+      ${hubs.length || warns.length ? `<section class="block">
+        <h3>${tr('Сетевые зависимости', 'Network dependencies')}</h3>
+        ${hubs.length ? `<ul class="sm-list sm-deps">${netDeps}</ul>` : ''}
+        ${warns.map((w) => `<div class="sm-warn">⚠ ${esc(w)}</div>`).join('')}
+      </section>` : ''}
 
       <section class="block">
         <h3>Самые нагруженные</h3>

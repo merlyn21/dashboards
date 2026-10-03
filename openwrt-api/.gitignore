@@ -1,0 +1,14 @@
+.env
+names.conf
+__pycache__/
+geo/*.csv.gz
+geo/*.starts
+geo/*.ends
+geo/*.idx
+geo/*.starts6
+geo/*.ends6
+geo/*.idx6
+geo/*.json
+geo/*.part
+oui/oui.txt
+oui/*.part

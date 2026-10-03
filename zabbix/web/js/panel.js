@@ -15,11 +15,16 @@ const WIDE = window.matchMedia('(min-width: 1200px)');
 
 export class DetailPanel {
   // root: the right-hand panel; overlay: container for glass cards over the scene.
-  constructor(root, overlay, { onClose, onService }) {
+  constructor(root, overlay, { onClose, onService, onSelect }) {
     this.root = root;
     this.overlay = overlay;
     this.onClose = onClose;
     this.onService = onService;
+    // Links to the uplink / clients of this host (network dependencies).
+    root.addEventListener('click', (e) => {
+      const a = e.target.closest('[data-host]');
+      if (a && onSelect) onSelect(a.dataset.host);
+    });
     this.hostId = null;
     this.range = RANGES[0].sec;
     this.minimized = {};
@@ -135,9 +140,12 @@ export class DetailPanel {
         </div>
         <div class="ph-sub">${esc(osName)}${d.arch ? ` · ${esc(d.arch)}` : ''}</div>
         <div class="chips">${h.groups.map((g) => `<span class="chip">${esc(g)}</span>`).join('')}</div>
+        ${h.uplink ? `<div class="ph-link">⇡ ${tr('Подключён через', 'Connected via')} <a data-host="${h.uplink}">${esc(h.uplink_name)}</a>${h.uplink_port ? ` · ${tr('порт', 'port')} <b>${h.uplink_port_guess ? '≈' : ''}${esc(h.uplink_port)}</b>${h.uplink_port_guess ? ` <span class="muted" title="${tr('угадан по трафику; задайте тег galaxy.port', 'guessed from traffic; set the galaxy.port tag')}">(${tr('угадан', 'guessed')})</span>` : ''}` : ''}</div>` : ''}
+        ${h.blocked_by ? `<div class="ph-link warn">${tr('Недоступен из-за', 'Unreachable because of')} <a data-host="${h.blocked_by}">${esc(h.blocked_by_name)}</a></div>` : ''}
+        ${h.clients?.length ? `<div class="ph-link">⇣ ${tr('Клиенты', 'Clients')}: ${h.clients.map((id, i) => `<a data-host="${id}">${esc(h.client_names[i])}</a>`).join(', ')}</div>` : ''}
       </header>
 
-      <section class="kpis">
+      ${h.probe ? this.pingKpis(h) : `<section class="kpis">
         ${kpi('CPU', pct(h.cpu), h.cpu, METRIC.cpu.color, h.cores ? `${h.cores} ${tr(plural(h.cores, 'ядро', 'ядра', 'ядер'), h.cores === 1 ? 'core' : 'cores')}${h.load1 != null ? ` · LA ${h.load1.toFixed(2)}` : ''}` : '')}
         ${kpi('RAM', pct(h.mem), h.mem, METRIC.mem.color, h.mem_total ? `${tr('из', 'of')} ${bytes(h.mem_total)}` : '')}
         ${kpi(`${tr('Диск', 'Disk')} ${esc(h.disk_mount || '')}`, pct(h.disk), h.disk, METRIC.disk.color, h.disk_total ? `${tr('из', 'of')} ${bytes(h.disk_total)}` : '')}
@@ -146,7 +154,7 @@ export class DetailPanel {
           <div class="kpi-net"><span style="--c:${NET.in.color}">↓ ${bps(h.net_in)}</span><span style="--c:${NET.out.color}">↑ ${bps(h.net_out)}</span></div>
           <div class="kpi-s">${this.history?.net_iface ? `${tr('график', 'chart')}: ${esc(this.history.net_iface)}` : ''}</div>
         </div>
-      </section>
+      </section>`}
 
       <section class="block hist">
         <div class="block-h"><h3>История</h3>
@@ -199,8 +207,23 @@ export class DetailPanel {
 
   // Secondary information: shown as floating glass cards on wide screens,
   // appended to the panel otherwise. weight ~ expected height in rows.
+  // Ping-only device (ICMP template only): answer, response time, loss.
+  pingKpis(h) {
+    const g = h.ping || {};
+    const ans = g.ok == null ? '—' : g.ok ? tr('отвечает', 'up') : tr('нет ответа', 'no reply');
+    const okColor = g.ok === 0 ? '#d03b3b' : '#0ca30c';
+    return `<section class="kpis">
+      <div class="kpi"><div class="kpi-l">ICMP ping</div><div class="kpi-v" style="color:${okColor}">${ans}</div>
+        <div class="kpi-s">${tr('устройство без агента', 'device without an agent')}</div></div>
+      <div class="kpi"><div class="kpi-l">${tr('Отклик', 'Response time')}</div><div class="kpi-v">${g.rtt == null ? '—' : `${(g.rtt * 1000).toFixed(1)} ${tr('мс', 'ms')}`}</div></div>
+      <div class="kpi"><div class="kpi-l">${tr('Потери', 'Loss')}</div><div class="kpi-v">${pct(g.loss)}</div></div>
+      <div class="kpi"><div class="kpi-l">${tr('Метрик', 'Items')}</div><div class="kpi-v">${h.items}</div></div>
+    </section>`;
+  }
+
   cards(h, d) {
     const out = [this.problemsCard(d.problems)];
+    if (h.probe) return out; // nothing else is collected for a ping-only device
     out.push({
       id: 'system', icon: 'ⓘ', title: 'Система', weight: 3,
       html: `<div class="facts tight">
@@ -312,7 +335,7 @@ export class DetailPanel {
         const errs = (p.in_errors || 0) + (p.out_errors || 0);
         const virt = p.iftype != null && ![6, 62, 69, 71, 117].includes(p.iftype);
         return `<li class="${virt ? 'virt' : ''}" title="${esc(p.name)}">
-          <div class="pt-top"><span class="dot" style="--c:${c}"></span><b>${esc(p.name)}</b>${p.uplink ? '<span class="tag">WAN</span>' : ''}</div>
+          <div class="pt-top"><span class="dot" style="--c:${c}"></span><b>${esc(p.name)}</b>${p.uplink ? '<span class="tag">WAN</span>' : ''}${p.clients ? `<span class="pt-client">${p.guess ? '≈' : ''}→ ${esc(p.clients.join(', '))}</span>` : ''}</div>
           <div class="pt-sub"><span>${p.speed ? bps(p.speed) : '—'}</span>
             <span style="--c:${NET.in.color}">↓ ${bpsShort(p.in)}</span><span style="--c:${NET.out.color}">↑ ${bpsShort(p.out)}</span>
             <span class="${errs ? 'crit-t' : ''}" title="${tr('ошибок в секунду', 'errors per second')}">${tr('ош.', 'err.')} ${errs || 0}</span></div></li>`;
@@ -386,6 +409,9 @@ export class DetailPanel {
     }
     const s = hs.series;
     const defs = [
+      // Ping-only devices (no CPU data): response time and loss.
+      !s.cpu && s.rtt && { title: tr('Отклик ICMP, мс', 'ICMP response time, ms'), series: [{ name: 'RTT', color: METRIC.cpu.color, points: s.rtt.map(([t, v]) => [t, v * 1000]) }], fmt: (v) => `${v.toFixed(1)} ${tr('мс', 'ms')}` },
+      !s.cpu && s.loss && { title: tr('Потери ICMP, %', 'ICMP loss, %'), series: [{ name: tr('Потери', 'Loss'), color: '#d03b3b', points: s.loss }], max: 100, fmt: (v) => pct(v, 0) },
       s.cpu && { title: 'CPU, %', series: [{ name: 'CPU', color: METRIC.cpu.color, points: s.cpu }], max: 100, fmt: (v) => pct(v, 1) },
       s.mem && { title: 'RAM, %', series: [{ name: 'RAM', color: METRIC.mem.color, points: s.mem }], max: 100, fmt: (v) => pct(v, 1) },
       s.disk && { title: 'Диск, %', series: [{ name: 'Диск', color: METRIC.disk.color, points: s.disk }], max: 100, fmt: (v) => pct(v, 1) },

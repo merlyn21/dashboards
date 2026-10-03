@@ -1,0 +1,21 @@
+# systemd unit. Install:
+#   sudo cp linux-map.service /etc/systemd/system/
+#   (edit WorkingDirectory and ExecStart if the project is not in /opt/linux-map)
+#   sudo systemctl daemon-reload && sudo systemctl enable --now linux-map
+#   journalctl -u linux-map -f
+[Unit]
+Description=Connection map of this Linux router or server
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/linux-map
+ExecStartPre=-/usr/bin/python3 /opt/linux-map/fetch_data.py
+ExecStart=/usr/bin/python3 /opt/linux-map/server.py
+Restart=on-failure
+RestartSec=10
+Environment=PYTHONUNBUFFERED=1
+
+[Install]
+WantedBy=multi-user.target

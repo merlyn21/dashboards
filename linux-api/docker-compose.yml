@@ -1,0 +1,30 @@
+# Connection map of the Docker host. The container shares the host's network and PIDs and runs as root
+# with admin rights over the network: it is isolated from the host only as a package, not for security.
+#
+#   cp .env.example .env            # mode, WAN, where to serve the map
+#   docker compose up -d --build
+#   docker compose logs -f          # first start: ~95 MB of databases and a cache build, about two minutes
+services:
+  linux-map:
+    build: .
+    image: linux-map
+    container_name: linux-map
+    restart: unless-stopped
+    network_mode: host              # the host's interfaces, routes, neighbours and conntrack; http_* in .env as on the host
+    pid: host                       # process names in ss
+    uts: host                       # the host's name in the top bar
+    cap_add:
+      - NET_ADMIN                   # conntrack -L/-E, iptables-save
+      - SYS_PTRACE                  # ss -p: sockets of other processes
+      - DAC_READ_SEARCH
+    # conntrack_acct=on writes /proc/sys/net/netfilter/nf_conntrack_acct, which is read-only in a normal container.
+    # Either uncomment privileged, or set it once on the host (README.md) and keep conntrack_acct=off.
+    # privileged: true
+    security_opt:
+      - apparmor=unconfined         # Ubuntu's docker-default profile blocks ptrace of host processes
+    volumes:
+      - /:/host:ro,rslave           # os-release, /etc/hosts, disk usage, OpenVPN status files
+      - ./.env:/app/.env:ro
+      - ./names.conf:/app/names.conf:ro
+      - ./geo:/app/geo
+      - ./oui:/app/oui

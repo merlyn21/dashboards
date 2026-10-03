@@ -10,6 +10,7 @@ process. Standard library only.
 import argparse
 import atexit
 import json
+import math
 import mimetypes
 import os
 import re
@@ -383,6 +384,7 @@ class Model:
                        "maintenance_status", "active_available"],
             "selectInterfaces": ["available", "ip", "dns", "type", "main", "error"],
             "selectHostGroups": ["name"],
+            "selectTags": ["tag", "value"],
         })
         items = z.call("item.get", {
             "output": ["itemid", "hostid", "key_", "name", "lastvalue", "lastclock",
@@ -426,9 +428,117 @@ class Model:
             detail[hid] = extra
 
         out.sort(key=lambda x: x["name"].lower())
+        warnings = self._topology(hosts, out, detail)
         groups = sorted({g for h in out for g in h["groups"]})
-        return {"generated": now, "hosts": out, "groups": groups, "_detail": detail,
-                "zabbix": self._zabbix_info(hosts, items, out, now)}
+        info = self._zabbix_info(hosts, items, out, now)
+        info["topology_warnings"] = warnings
+        return {"generated": now, "hosts": out, "groups": groups, "_detail": detail, "zabbix": info}
+
+    @staticmethod
+    def _topology(hosts, out, detail):
+        """Network dependencies from host tags: galaxy.uplink=<host name of the upstream device>
+        and optionally galaxy.port=<its port>. Sets uplink / uplink_port / clients / blocked_by on
+        the summaries and the client name on the matching port. Returns warnings for bad tags."""
+        tags = {h["hostid"]: {t["tag"]: t["value"].strip() for t in h.get("tags", [])} for h in hosts}
+
+        def attach(parent, port, client, guess):
+            """Name the client on the port, both in the summary and in the port card."""
+            for x in [port] + [x for x in (detail.get(parent["id"], {}).get("satellites", {}).get("ports") or {}).get("ports", [])
+                               if x["name"] == port["name"]]:
+                x.setdefault("clients", []).append(client)
+                if guess:
+                    x["guess"] = True
+        live = [s for s in out if s["state"] != "disabled"]
+        by_host = {s["host"]: s for s in live}
+        by_name = {s["name"]: s for s in live}
+        warnings = []
+        for s in live:
+            s["uplink"] = None
+            s["clients"] = []
+        for s in live:
+            ref = tags.get(s["id"], {}).get("galaxy.uplink")
+            if not ref:
+                continue
+            parent = by_host.get(ref) or by_name.get(ref)
+            if parent is None:
+                warnings.append(L("%s: galaxy.uplink=%s — хост не найден", "%s: galaxy.uplink=%s — host not found") % (s["name"], ref))
+                continue
+            if parent is s:
+                warnings.append(L("%s: galaxy.uplink ссылается на себя", "%s: galaxy.uplink points to itself") % s["name"])
+                continue
+            s["uplink"] = parent["id"]
+            s["uplink_name"] = parent["name"]
+            s["uplink_port"] = tags[s["id"]].get("galaxy.port") or None
+        # Break cycles: walk up from every host; a host met twice closes a loop.
+        ids = {s["id"]: s for s in live}
+        for s in live:
+            seen, cur = [], s
+            while cur is not None and cur["uplink"]:
+                if cur["id"] in seen:
+                    warnings.append(L("Цикл в galaxy.uplink: %s", "Loop in galaxy.uplink: %s") % " → ".join(ids[i]["name"] for i in seen))
+                    cur["uplink"] = None
+                    break
+                seen.append(cur["id"])
+                cur = ids.get(cur["uplink"])
+        for s in live:
+            if not s["uplink"]:
+                s.pop("uplink_name", None)
+                s.pop("uplink_port", None)
+                continue
+            parent = ids[s["uplink"]]
+            parent["clients"].append(s["id"])
+            parent.setdefault("client_names", []).append(s["name"])
+            port = s.get("uplink_port")
+            if port:
+                sat = next((x for x in parent["satellites"] if x["type"] == "ports"), None)
+                hit = next((x for x in (sat or {}).get("ports", []) if x["name"] == port), None)
+                if hit is None:
+                    warnings.append(L("%s: galaxy.port=%s — у %s нет такого порта", "%s: galaxy.port=%s — %s has no such port")
+                                    % (s["name"], port, parent["name"]))
+                    s["uplink_port"] = None
+                else:
+                    attach(parent, hit, s["name"], False)
+        # Clients without galaxy.port: guess the port by traffic. The port receives what the client
+        # sends and sends what it receives, so compare (client out, client in) with (port in, port out)
+        # on a log scale and pair greedily; clients left over hang on a "port not set" segment.
+        lg = lambda v: math.log10(max(v or 0, 1000))
+        for parent in live:
+            sat = next((x for x in parent["satellites"] if x["type"] == "ports"), None)
+            if not sat or not parent["clients"]:
+                continue
+            free = [p for p in sat.get("ports", []) if p.get("up") and not p.get("clients") and not p.get("virtual")]
+            todo = [ids[c] for c in parent["clients"] if not ids[c].get("uplink_port")]
+            pairs = sorted((abs(lg(c["net_out"]) - lg(p.get("in"))) + abs(lg(c["net_in"]) - lg(p.get("out"))), i, j)
+                           for i, c in enumerate(todo) if (c["net_in"] or 0) + (c["net_out"] or 0) > 0
+                           for j, p in enumerate(free))
+            used_c, used_p = set(), set()
+            for score, i, j in pairs:
+                if score > 1.3 or i in used_c or j in used_p:
+                    continue  # more than ~4-5x off in each direction: not a believable match
+                used_c.add(i)
+                used_p.add(j)
+                c, p = todo[i], free[j]
+                c["uplink_port"], c["uplink_port_guess"] = p["name"], True
+                attach(parent, p, c["name"], True)
+            for i, c in enumerate(todo):
+                if i not in used_c:
+                    sat["ports"].append({"name": "?" + c["name"], "virtual": True, "up": None, "in": None, "out": None,
+                                         "speed": None, "uplink": False, "clients": [c["name"]]})
+            missing = [c["name"] for i, c in enumerate(todo) if i not in used_c]
+            if missing:
+                warnings.append(L("Порт не указан и не угадан (galaxy.port): %s", "Port not set and not guessed (galaxy.port): %s")
+                                % ", ".join(missing))
+        # A host that is down while its uplink is down too is unreachable because of the uplink.
+        down = lambda x: x["state"] in ("unreachable", "unknown")
+        for s in live:
+            s["blocked_by"] = None
+            cur = ids.get(s["uplink"]) if s["uplink"] else None
+            while down(s) and cur is not None:
+                if down(cur):
+                    s["blocked_by"] = cur["id"]
+                    s["blocked_by_name"] = cur["name"]
+                cur = ids.get(cur["uplink"]) if cur["uplink"] else None
+        return warnings
 
     def _zabbix_info(self, hosts, items, summaries, now):
         """Facts about the Zabbix installation itself, for the ticker."""
@@ -477,10 +587,17 @@ class Model:
         active_ok = h.get("active_available") == "1"
         cpu_item = hx.item("system.cpu.util")
         data_fresh = hx.fresh(cpu_item) or hx.fresh(hx.item("agent.ping"))
+        # ICMP checks (template "ICMP Ping"): for devices without an agent (cameras, printers,
+        # switches) this is the only data, and a fresh ping says whether they are alive.
+        ping_it = hx.item("icmpping")
+        ping = hx.val("icmpping")
+        probe = bool(hx.items) and all(k.startswith(("icmpping", "zabbix[host")) for k in hx.by_key)
         if not enabled:
             state = "disabled"
-        elif iface_ok or active_ok or data_fresh:
+        elif iface_ok or active_ok or data_fresh or ping == 1:
             state = "online"
+        elif ping == 0:
+            state = "unreachable"
         elif iface_bad or hx.items:
             state = "unreachable"
         else:
@@ -606,7 +723,12 @@ class Model:
                          "list": [{"id": p["id"], "name": p["name"], "severity": p["severity"],
                                    "since": p["since"], "ack": p["acknowledged"]} for p in probs]},
             "satellites": satellites,
+            # Ping data (any host with ICMP items); probe = ping is all there is.
+            "ping": {"ok": ping, "rtt": hx.val("icmppingsec"), "loss": hx.val("icmppingloss")} if ping_it else None,
+            "probe": probe,
         }
+        if probe:
+            summary["distro"] = {"id": "device", "name": L("Устройство · только ping", "Device · ping only")}
         disks = self._disks(hx)
         series = self._series_items(hx, main_fs, phys)
         for d in disks:  # per-device history for the disk card sparklines
@@ -728,6 +850,8 @@ class Model:
             "cpu": iid("system.cpu.util") or pref("system.cpu.util"),
             "mem": iid("vm.memory.utilization", "vm.memory.util") or pref("vm.memory.util", "vm.memory.utilization"),
             "load": iid("system.cpu.load[all,avg1]"),
+            "rtt": iid("icmppingsec"),
+            "loss": iid("icmppingloss"),
         }
         if main_fs:
             m = main_fs["mount"]

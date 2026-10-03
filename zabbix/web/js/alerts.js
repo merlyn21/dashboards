@@ -39,6 +39,11 @@ export class Alerts {
     const alive = new Set();
 
     for (const h of hosts) {
+      if (h.blocked_by) { // down because its uplink is down: the uplink carries the alert
+        current.set(h.id, new Set((h.problems.list || []).map((p) => p.id)));
+        this.galaxy.setAlarm(h.id, false);
+        continue;
+      }
       const ids = new Set();
       for (const p of h.problems.list || []) {
         ids.add(p.id);

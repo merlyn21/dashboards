@@ -16,11 +16,12 @@ export const OS_STYLE = {
   routeros: { label: 'RouterOS', pal: ['#2a5f8a', '#0b1a2b', '#7fd0f0'], emblem: '#eaf7ff', style: 1, bands: 3, warp: 1.5 },
   alpine: { label: 'Alpine', pal: ['#0d597f', '#062a3d', '#9fd8f5'], emblem: '#ffffff', style: 0, bands: 4, warp: 2 },
   linux: { label: 'Linux', pal: ['#f0b429', '#2b2b2b', '#fff1bf'], emblem: '#161616', style: 0, bands: 6, warp: 3 },
+  device: { label: 'Только ping', pal: ['#4f8f9a', '#14303a', '#bfe9ef'], emblem: '#e8fbff', style: 1, bands: 3, warp: 1 },
   unknown: { label: 'Неизвестно', pal: ['#8fa6b8', '#3f5566', '#dfe7ee'], emblem: null, style: 0, bands: 5, warp: 3 },
 };
 
 // Shown in the legend (order matters).
-export const OS_LEGEND = ['windows', 'ubuntu', 'debian', 'raspbian', 'manjaro', 'routeros', 'openwrt', 'linux'];
+export const OS_LEGEND = ['windows', 'ubuntu', 'debian', 'raspbian', 'manjaro', 'routeros', 'openwrt', 'linux', 'device'];
 
 export function osStyle(id) {
   return OS_STYLE[id] || OS_STYLE.unknown;
@@ -148,6 +149,18 @@ EMBLEMS.openwrt = (g, s) => {
       g.arc(0, 0, s * r, a - 0.75, a + 0.75);
       g.stroke();
     }
+  }
+};
+// Ping-only device: a dot inside two echo rings (sonar).
+EMBLEMS.device = (g, s) => {
+  g.beginPath();
+  g.arc(0, 0, s * 0.22, 0, Math.PI * 2);
+  g.fill();
+  g.lineWidth = s * 0.12;
+  for (const r of [0.55, 0.9]) {
+    g.beginPath();
+    g.arc(0, 0, s * r, 0, Math.PI * 2);
+    g.stroke();
   }
 };
 

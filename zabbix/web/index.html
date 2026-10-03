@@ -42,6 +42,7 @@
       <h4>Раскладка</h4>
       <select id="layout">
         <option value="state">По состоянию — проблемные ближе к ядру</option>
+        <option value="network">По сети — клиенты на ножках портов роутера</option>
         <option value="free">Свободная галактика</option>
       </select>
     </section>
@@ -80,6 +81,9 @@
           <select id="satLabels"><option value="focus">у выбранного</option><option value="all">все</option></select>
         </label>
       </div>
+      <label class="inline">Плавность
+        <select id="fps"><option value="60">60 кадров/с</option><option value="30">30 кадров/с</option><option value="15">15 кадров/с</option></select>
+      </label>
       <label class="inline">Обновлять каждые
         <select id="refresh"><option value="15">15 с</option><option value="30">30 с</option><option value="60">1 мин</option><option value="300">5 мин</option></select>
       </label>
@@ -118,6 +122,7 @@
     </section>
   </aside>
 
+  <nav id="centers" class="glass centers hidden" aria-label="Центры"></nav>
   <button id="home" class="glass home-btn" title="Вернуться к галактике (Esc или клик по пустому месту)">◎ Вся галактика</button>
 
   <div id="overlay" class="overlay"></div>

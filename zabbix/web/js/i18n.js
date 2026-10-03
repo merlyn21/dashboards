@@ -25,6 +25,8 @@ const EN = {
   'Раскладка': 'Layout',
   'По состоянию — проблемные ближе к ядру': 'By state — troubled hosts closer to the core',
   'Свободная галактика': 'Free galaxy',
+  'Плавность': 'Smoothness', '60 кадров/с': '60 fps', '30 кадров/с': '30 fps', '15 кадров/с': '15 fps',
+  'По сети — клиенты на ножках портов роутера': 'Network — clients on the port legs of their router',
   'Размер планеты': 'Planet size',
   'Метрики у планет': 'Planet metrics',
   'Карточка над планетой': 'Card above the planet',

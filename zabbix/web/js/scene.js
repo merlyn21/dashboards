@@ -257,7 +257,10 @@ function buildCraft(type, important = false) {
 // mast with a beacon. Each LAN port is a segment placed symmetrically around the station.
 export const isRouter = (h) => h.satellites?.some((s) => s.type === 'ports');
 const PORT_LIGHT = { up: '#3ddc5a', down: '#ff3b30', none: '#6b6a64' };
+const ALARM_RED = new THREE.Color('#ff2a1a');
 const POD_R = 2.1; // distance of the port segments from the station axis
+const HUB_R = 108; // systems (uplinks with clients) sit outside the galaxy's outer belt
+const MINI_TIERS = [5, 10, 15, 20, 27]; // leg length by health tier around an uplink
 
 function buildRouterStation(uniforms, glow) {
   const group = new THREE.Group();
@@ -376,7 +379,15 @@ function labelHtml(h) {
   const st = h.state !== 'online' ? `<span class="pl-state">${STATE[h.state].label}</span>` : '';
   const os = h.distro ? `<div class="pl-os">${esc(h.distro.name)}</div>` : '';
   let rows = '';
-  if (h.state !== 'disabled' && ['cpu', 'mem', 'disk'].some((m) => h[m] != null)) {
+  if (h.probe && h.ping && h.state !== 'disabled') {
+    // Ping-only device: answer, response time and loss instead of CPU / RAM / disk.
+    const g = h.ping;
+    const ans = g.ok == null ? '—' : g.ok ? tr('отвечает', 'up') : tr('нет ответа', 'no reply');
+    rows = `<div class="pl-metrics pl-ping">
+      <div class="pm ${g.ok === 0 ? 'crit' : ''}"><span class="pm-k">Ping</span><span class="pm-v wide">${ans}</span></div>
+      <div class="pm"><span class="pm-k">${tr('Отклик', 'RTT')}</span><span class="pm-v wide">${g.rtt == null ? '—' : `${(g.rtt * 1000).toFixed(1)} ${tr('мс', 'ms')}`}</span></div>
+      <div class="pm ${g.loss >= 20 ? 'crit' : g.loss > 0 ? 'warn' : ''}"><span class="pm-k">${tr('Потери', 'Loss')}</span><span class="pm-v wide">${g.loss == null ? '—' : `${Math.round(g.loss)}%`}</span></div></div>`;
+  } else if (h.state !== 'disabled' && ['cpu', 'mem', 'disk'].some((m) => h[m] != null)) {
     rows = `<div class="pl-metrics">${['cpu', 'mem', 'disk'].map((m) => {
       const v = h[m];
       const lvl = v == null ? '' : v >= 90 ? 'crit' : v >= 80 ? 'warn' : '';
@@ -392,7 +403,8 @@ function labelHtml(h) {
       <span class="pm-v">${bpsShort(v)}</span></div>`;
     net = `<div class="pl-metrics pl-net">${row('in', h.net_in)}${row('out', h.net_out)}</div>`;
   }
-  return `<div class="pl-head"><span class="pl-name">${esc(h.name)}</span>${badge}${st}</div>${os}${rows}${net}`;
+  const dep = h.blocked_by ? `<div class="pl-dep">${tr('за', 'behind')} ${esc(h.blocked_by_name)}</div>` : '';
+  return `<div class="pl-head"><span class="pl-name">${esc(h.name)}</span>${badge}${st}</div>${os}${dep}${rows}${net}`;
 }
 
 function glowTexture() {
@@ -495,13 +507,19 @@ export class Galaxy {
     c.enableDamping = true;
     c.dampingFactor = 0.06;
     c.minDistance = 4;
-    c.maxDistance = 260;
+    c.maxDistance = 420;
     c.autoRotateSpeed = 0.35;
-    c.addEventListener('start', () => { this.flight = null; });
+    c.addEventListener('start', () => { this.flight = null; this.dragging = true; });
+    c.addEventListener('end', () => { this.dragging = false; this.interactUntil = performance.now() + 1500; }); // damping settles
+    c.addEventListener('change', () => { this.cameraMoved = true; });
 
     this.composer = new EffectComposer(r);
     this.composer.addPass(new RenderPass(this.scene, this.camera));
     this.bloom = new UnrealBloomPass(new THREE.Vector2(256, 256), 0.85, 0.55, 0.62);
+    // Bloom works on blurred mip levels anyway: computing it at half resolution looks the same
+    // and costs about a quarter.
+    const bloomSize = this.bloom.setSize.bind(this.bloom);
+    this.bloom.setSize = (w, h) => bloomSize(Math.max(1, Math.round(w / 2)), Math.max(1, Math.round(h / 2)));
     this.composer.addPass(this.bloom);
     this.composer.addPass(new OutputPass());
 
@@ -515,6 +533,10 @@ export class Galaxy {
     this.buildBackground();
     this.flows = new THREE.Group();
     this.scene.add(this.flows);
+    this.tethers = new THREE.Group(); // port legs to clients (see updateTethers)
+    this.scene.add(this.tethers);
+    this.hubRings = new THREE.Group(); // orbits around uplinks with clients
+    this.scene.add(this.hubRings);
     this.buildTierRings();
     this.flowList = new Map();
 
@@ -526,7 +548,19 @@ export class Galaxy {
 
     new ResizeObserver(() => this.resize()).observe(container);
     this.resize();
-    r.setAnimationLoop(() => this.frame());
+    // Frame cap: full rate while the view moves (drag, zoom, camera flight), the "smoothness"
+    // setting (30 fps by default) when idle. Most of the CPU goes into drawing frames, and an
+    // idle galaxy only needs its particles and blinks to keep going.
+    this.lastFrameAt = 0;
+    this.interactUntil = 0;
+    this.frameNo = 0;
+    r.setAnimationLoop((now) => {
+      const active = this.dragging || this.flight || now < this.interactUntil;
+      const fps = active ? 60 : Math.max(5, Number(this.settings?.fps) || 30);
+      if (now - this.lastFrameAt < 1000 / fps - 2) return;
+      this.lastFrameAt = now;
+      this.frame();
+    });
   }
 
   // ------------------------------------------------------------------ background
@@ -599,14 +633,77 @@ export class Galaxy {
   // ------------------------------------------------------------------ layout
 
   layout(hosts, mode = 'state') {
-    // Angle is always stable per host; the distance from the core is either
-    // random ("free") or set by health: worst problems sit closest to the core.
+    // Network dependencies (galaxy.uplink tags): parentOf(id) -> upstream host id.
+    const byId = new Map(hosts.map((h) => [h.id, h]));
+    const parentOf = (id) => { const u = byId.get(id)?.uplink; return u && byId.has(u) ? u : null; };
+    const kids = new Map();
+    for (const h of hosts) { const u = parentOf(h.id); if (u) kids.set(u, [...(kids.get(u) || []), h.id]); }
+    const bySeed = (tag) => (a, b) => seeded(tag + a)() - seeded(tag + b)();
+    for (const list of kids.values()) list.sort(bySeed('slot'));
+    this.stationYaw = new Map();
+    this.systems = [];
+    // Uplinks with clients (MikroTik, ...) become systems of their own outside the galaxy:
+    // the uplink far from the core, its clients hanging on the legs of the ports they use.
+    const hubs = mode === 'free' ? [] : hosts.filter((h) => !parentOf(h.id) && kids.has(h.id)).map((h) => h.id).sort(bySeed('slot'));
+    const inSystem = new Set();
+    const mark = (id) => { inSystem.add(id); (kids.get(id) || []).forEach(mark); };
+    hubs.forEach(mark);
+    const pos = this.layoutGalaxy(hosts.filter((h) => !inSystem.has(h.id)), mode, parentOf, kids, bySeed);
+    hubs.forEach((id, i) => {
+      const a = ((i + 0.5) / hubs.length) * Math.PI * 2 + 0.9;
+      const c = new THREE.Vector3(Math.cos(a) * HUB_R, 0, Math.sin(a) * HUB_R);
+      pos.set(id, c);
+      this.placeSystem(id, c, a + Math.PI, mode, byId, kids, pos, 0);
+    });
+    return pos;
+  }
+
+  // Clients of `id` around it: each on the extension of its port segment (the station is
+  // turned so the gap between segments faces `towards`, i.e. the core or its own uplink).
+  // Distance: fixed in the "network" layout, by health in the "state" layout (mini belts).
+  placeSystem(id, center, towards, mode, byId, kids, pos, depth) {
+    const h = byId.get(id);
+    const R = this.planets.get(id)?.targetRadius || 3;
+    const ports = h.satellites?.find((s) => s.type === 'ports')?.ports || [];
+    const n = ports.length;
+    const yaw = n ? Math.PI / 2 - Math.PI / n - towards : 0;
+    if (n) this.stationYaw.set(id, yaw);
+    const segAngle = (i) => (i / n) * Math.PI * 2 + Math.PI / 2 - yaw; // atan2(z, x) of segment i
+    const base = n ? R * POD_R + 2 : R * 1.6 + 2;
+    const list = kids.get(id) || [];
+    const onPort = new Map(); // segment index -> client ids
+    const loose = [];
+    for (const c of list) {
+      const name = byId.get(c).name;
+      const i = ports.findIndex((p) => p.clients?.includes(name));
+      if (i >= 0) onPort.set(i, [...(onPort.get(i) || []), c]); else loose.push(c);
+    }
+    const tierStep = depth ? 0.7 : 1;
+    let far = base;
+    const put = (c, a) => {
+      const ch = byId.get(c);
+      const cr = this.planets.get(c)?.targetRadius || 2.5;
+      const leg = mode === 'network' ? (depth ? 8 : 12) : MINI_TIERS[healthTier(ch)] * tierStep;
+      const d = base + cr + leg;
+      far = Math.max(far, d + cr * 3);
+      const v = new THREE.Vector3(center.x + Math.cos(a) * d, center.y + (seeded('y' + c)() - 0.5) * 2, center.z + Math.sin(a) * d);
+      pos.set(c, v);
+      if (kids.has(c)) far = Math.max(far, v.distanceTo(center) + this.placeSystem(c, v, a + Math.PI, mode, byId, kids, pos, depth + 1));
+    };
+    for (const [i, cs] of onPort) cs.forEach((c, k) => put(c, segAngle(i) + (k - (cs.length - 1) / 2) * 0.3));
+    loose.forEach((c, k) => put(c, towards + ((k + 1) / (loose.length + 1)) * Math.PI * 2)); // no ports: spread, gap to the uplink
+    this.systems.push({ id, center: center.clone(), depth, base, radius: far });
+    return far;
+  }
+
+  // The galaxy around the core: health belts ("state" / "network") or free placement.
+  layoutGalaxy(hosts, mode, parentOf, kids, bySeed) {
+    const byId = new Map(hosts.map((h) => [h.id, h]));
     const byState = mode !== 'free';
-    // State layout: every live host gets its own angular slot (order stable per host id),
-    // so a planet on an inner belt never sits on the traffic lane of an outer one.
-    // Lifeless hosts (no flows) are spread over the outer belt separately.
-    const live = hosts.filter((h) => !lifeless(h)).map((h) => h.id)
-      .sort((a, b) => seeded('slot' + a)() - seeded('slot' + b)());
+    // Every live host gets its own angular slot (order stable per host id), so a planet on an
+    // inner belt never sits on the traffic lane of an outer one. Lifeless hosts are spread over
+    // the outer belt separately. In the free layout clients are pulled next to their uplink.
+    const live = hosts.filter((h) => !lifeless(h)).map((h) => h.id).sort(bySeed('slot'));
     const dead = hosts.filter((h) => lifeless(h)).map((h) => h.id).sort();
     const slotAngle = (id) => {
       const i = live.indexOf(id);
@@ -622,6 +719,19 @@ export class Galaxy {
       const d = byState ? tier.r0 + u * (tier.r1 - tier.r0) : 16 + Math.sqrt(u) * 40;
       return { id: h.id, tier, v: new THREE.Vector3(Math.cos(a) * d, y, Math.sin(a) * d) };
     });
+    if (!byState) {
+      const at = new Map(pts.map((p) => [p.id, p.v]));
+      const place = (id) => {
+        const list = (kids.get(id) || []).filter((c) => at.has(c));
+        list.forEach((c, i) => {
+          const base = at.get(id);
+          const a = Math.atan2(base.z, base.x) + (i - (list.length - 1) / 2) * 0.6;
+          at.get(c).set(base.x + Math.cos(a) * 12, base.y, base.z + Math.sin(a) * 12);
+          place(c);
+        });
+      };
+      hosts.filter((h) => !parentOf(h.id)).forEach((h) => place(h.id));
+    }
     const minD = byState ? 16 : 21;
     for (let it = 0; it < (byState ? 0 : 120); it++) { // state layout: slots already keep planets apart
       for (let i = 0; i < pts.length; i++) {
@@ -635,13 +745,77 @@ export class Galaxy {
         }
         const p = pts[i].v;
         const r = Math.hypot(p.x, p.z);
-        // Keep each planet inside its belt (state layout) or off the core (free layout).
         const lo = pts[i].tier ? pts[i].tier.r0 : 14, hi = pts[i].tier ? pts[i].tier.r1 : Infinity;
         const cr = Math.min(hi, Math.max(lo, r));
         if (r > 1e-4 && cr !== r) { p.x *= cr / r; p.z *= cr / r; }
       }
     }
-    return new Map(pts.map((p) => [p.id, p.v]));
+    return new Map(pts.filter((p) => byId.has(p.id)).map((p) => [p.id, p.v]));
+  }
+
+  // Orbits around each system: mini health belts ("state") or the ring of port legs ("network").
+  buildHubRings() {
+    for (const o of [...this.hubRings.children]) { this.hubRings.remove(o); o.geometry.dispose(); o.material.dispose(); }
+    const mode = this.settings.layout || 'state';
+    for (const sys of this.systems || []) {
+      const rings = mode === 'network'
+        ? [{ r: sys.base + 2.5 + (sys.depth ? 8 : 12), color: '#7fd0f0' }]
+        : HEALTH_TIERS.slice(0, 4).map((t, i) => ({ r: sys.base + 2.5 + MINI_TIERS[i] * (sys.depth ? 0.7 : 1), color: t.color }));
+      for (const { r, color } of rings) {
+        const g = new THREE.BufferGeometry().setFromPoints(Array.from({ length: 129 }, (_, k) => {
+          const a = (k / 128) * Math.PI * 2;
+          return new THREE.Vector3(sys.center.x + Math.cos(a) * r, sys.center.y, sys.center.z + Math.sin(a) * r);
+        }));
+        const line = new THREE.Line(g, new THREE.LineDashedMaterial({ color, dashSize: 0.8, gapSize: 0.8, transparent: true, opacity: 0.35, depthWrite: false }));
+        line.computeLineDistances();
+        this.hubRings.add(line);
+      }
+    }
+  }
+
+  // ------------------------------------------------------------------ views ("centers")
+
+  // Camera view of a centre: 'all' (everything), 'zabbix' (the galaxy around the core) or a
+  // system's uplink id. The camera keeps the default oblique direction and fits the radius.
+  viewFor(key) {
+    let center = new THREE.Vector3(), radius = 80;
+    const pts = [...this.planets.values()].filter((p) => p.visible !== false).map((p) => ({ p, v: p.target || p.group.position }));
+    const sys = (this.systems || []).find((x) => x.id === key && !x.depth);
+    if (sys) {
+      center = sys.center.clone();
+      radius = sys.radius + 4;
+    } else if (key === 'zabbix') {
+      const inSys = new Set((this.systems || []).flatMap((x) => this.clientsOf(x.id)));
+      radius = Math.max(40, ...pts.filter(({ p }) => !inSys.has(p.id)).map(({ v }) => v.length() + 6));
+    } else if (pts.length) {
+      const box = new THREE.Box3();
+      for (const { v } of pts) box.expandByPoint(v);
+      box.getCenter(center);
+      center.y = 0;
+      radius = Math.max(40, ...pts.map(({ v }) => v.distanceTo(center) + 6));
+    }
+    const dir = new THREE.Vector3(0, 96, 104).normalize();
+    const dist = Math.min(this.controls.maxDistance, (radius / Math.sin(THREE.MathUtils.degToRad(this.camera.fov / 2))) * (key === 'all' || key === 'zabbix' ? 1.0 : 0.85));
+    return { target: center, pos: center.clone().addScaledVector(dir, dist) };
+  }
+
+  clientsOf(id) {
+    const out = [id];
+    for (const h of this.hosts || []) if (h.uplink === id) out.push(...this.clientsOf(h.id));
+    return out;
+  }
+
+  // Switch the centre the overview is built around; Esc / empty click come back to it.
+  setHome(key, instant = false) {
+    this.homeKey = key;
+    this.home = this.viewFor(key);
+    if (instant) {
+      this.camera.position.copy(this.home.pos);
+      this.controls.target.copy(this.home.target);
+      this.controls.update();
+    } else if (!this.selected) {
+      this.fly(this.home.target.clone(), this.home.pos.clone());
+    }
   }
 
   buildTierRings() {
@@ -677,24 +851,16 @@ export class Galaxy {
   setData(hosts, settings) {
     this.hosts = hosts;
     this.settings = { ...settings };
-    const positions = this.layout(hosts, settings.layout);
-    // Belt labels go in the gap between two host slots, so they never sit on a planet or its lane.
-    const liveCount = Math.max(1, hosts.filter((h) => !lifeless(h)).length);
-    const k = Math.floor(liveCount / 2); // a gap on the far side of slot 0, usually nearer the camera
-    const gap = 0.3 + Math.PI / liveCount + (2 * Math.PI * k) / liveCount;
-    for (const l of this.tierLabelObjs) l.position.set(Math.cos(gap) * l.userData.r, 0, Math.sin(gap) * l.userData.r);
     const seen = new Set();
+    const fresh = new Set();
     for (const h of hosts) {
       seen.add(h.id);
       let p = this.planets.get(h.id);
       if (!p) {
         p = this.createPlanet(h);
         this.planets.set(h.id, p);
-        p.group.position.copy(positions.get(h.id));
-        p.target = positions.get(h.id).clone();
         this.world.add(p.group);
-      } else {
-        p.target = positions.get(h.id).clone(); // animated in frame(): planets glide to a new belt
+        fresh.add(p);
       }
       this.updatePlanet(p, h);
     }
@@ -705,8 +871,28 @@ export class Galaxy {
         this.planets.delete(id);
       }
     }
-    this.applySettings(settings);
+    this.applySettings(settings); // planet radii first: systems are spaced by them
+    const positions = this.layout(hosts, settings.layout);
+    // Belt labels go in the gap between two host slots, so they never sit on a planet or its lane.
+    const liveCount = Math.max(1, hosts.filter((h) => !lifeless(h)).length);
+    const k = Math.floor(liveCount / 2); // a gap on the far side of slot 0, usually nearer the camera
+    const gap = 0.3 + Math.PI / liveCount + (2 * Math.PI * k) / liveCount;
+    for (const l of this.tierLabelObjs) l.position.set(Math.cos(gap) * l.userData.r, 0, Math.sin(gap) * l.userData.r);
+    for (const p of this.planets.values()) {
+      const t = positions.get(p.id) || new THREE.Vector3(HUB_R, 0, 0);
+      if (fresh.has(p)) {
+        p.group.position.copy(t);
+        p.radius = p.targetRadius;
+      }
+      // Animated in frame(): planets glide to a new place. Small shifts (planet sizes follow the
+      // traffic on every poll) are ignored so the scene is not rebuilt for nothing.
+      if (fresh.has(p) || !p.target || p.target.distanceTo(t) > 0.8) p.target = t.clone();
+      if (p.station) p.station.pods.rotation.y = this.stationYaw.get(p.id) || 0;
+    }
+    this.buildHubRings();
     this.updateFlows();
+    if (!this.homeKey) this.setHome('all', true); // first data: show everything
+    else this.home = this.viewFor(this.homeKey);
   }
 
   // ------------------------------------------------------------------ traffic flows
@@ -733,10 +919,14 @@ export class Galaxy {
       if (lifeless(h) || (h.net_in == null && h.net_out == null)) continue;
       seen.add(p.id);
       let f = this.flowList.get(p.id);
-      const key = p.group.position.toArray().map((v) => v.toFixed(1)).join(',');
+      // A client's traffic goes to its uplink (the port segment when galaxy.port names one),
+      // not to the core: only the uplink's own WAN flow reaches the core.
+      const up = h.uplink ? this.planets.get(h.uplink) : null;
+      const start = up ? this.uplinkAnchor(up, h) : new THREE.Vector3();
+      const key = [...p.group.position.toArray(), ...start.toArray()].map((v) => v.toFixed(1)).join(',');
       if (!f || f.key !== key) {
         if (f) this.disposeFlow(f);
-        f = this.createFlow(p, key);
+        f = this.createFlow(p, key, start);
         this.flowList.set(p.id, f);
       }
       for (const lane of f.lanes) {
@@ -758,18 +948,57 @@ export class Galaxy {
     for (const [id, f] of this.flowList) {
       if (!seen.has(id)) { this.disposeFlow(f); this.flowList.delete(id); }
     }
+    this.updateTethers();
   }
 
-  createFlow(p, key) {
+  // Legs from a port segment to the client hanging on it, drawn when there is no traffic
+  // lane to show instead: translucent when the client is idle, dashed grey when it is down.
+  updateTethers() {
+    for (const o of [...this.tethers.children]) { this.tethers.remove(o); o.geometry.dispose(); o.material.dispose(); }
+    for (const p of this.planets.values()) {
+      const h = p.host;
+      const up = h.uplink && this.planets.get(h.uplink);
+      if (!up || h.state === 'disabled') continue;
+      if (this.flowList.get(p.id)?.lanes.some((l) => l.visibleCount > 0)) continue;
+      const a = this.uplinkAnchor(up, h);
+      const dir = p.group.position.clone().sub(a);
+      const b = a.clone().addScaledVector(dir, Math.max(0, 1 - (p.radius * 1.05) / Math.max(1e-3, dir.length())));
+      const g = new THREE.BufferGeometry().setFromPoints([a, b]);
+      const dead = lifeless(h);
+      const line = new THREE.Line(g, dead
+        ? new THREE.LineDashedMaterial({ color: '#8b8a85', dashSize: 0.6, gapSize: 0.5, transparent: true, opacity: 0.5, depthWrite: false })
+        : new THREE.LineBasicMaterial({ color: '#a9c4dc', transparent: true, opacity: 0.45, depthWrite: false }));
+      if (dead) line.computeLineDistances();
+      line.userData.hostId = p.id;
+      this.tethers.add(line);
+    }
+  }
+
+  // Where a client's flow starts on its uplink: the matching port segment, else the
+  // uplink's edge facing the client.
+  uplinkAnchor(up, h) {
+    const seg = up.portList.find((m) => m.data.clients?.includes(h.name));
+    if (seg) {
+      up.group.updateMatrixWorld(true);
+      return this.world.worldToLocal(seg.mesh.getWorldPosition(new THREE.Vector3()));
+    }
+    const me = this.planets.get(h.id);
+    const dir = me ? me.group.position.clone().sub(up.group.position).setY(0).normalize() : new THREE.Vector3(1, 0, 0);
+    return up.group.position.clone().addScaledVector(dir, up.radius * 1.2);
+  }
+
+  createFlow(p, key, start = new THREE.Vector3()) {
     const end = p.group.position.clone();
-    const dist = end.length();
-    const side = new THREE.Vector3(-end.z, 0, end.x).normalize();
+    const span = end.clone().sub(start);
+    const dist = span.length();
+    const side = new THREE.Vector3(-span.z, 0, span.x).normalize();
     const lanes = ['in', 'out'].map((dir, i) => {
       const off = side.clone().multiplyScalar(i ? 0.9 : -0.9);
-      const a = new THREE.Vector3(0, 0, 0).add(off.clone().multiplyScalar(0.3));
+      const a = start.clone().add(off.clone().multiplyScalar(0.3));
       const b = end.clone().add(off);
       const mid = a.clone().lerp(b, 0.5).add(new THREE.Vector3(0, dist * 0.18, 0)).add(off.clone().multiplyScalar(2));
       const curve = new THREE.QuadraticBezierCurve3(a, mid, b);
+      const samples = curve.getSpacedPoints(96);
       const color = new THREE.Color(NET[dir].color);
       const tube = new THREE.Mesh(new THREE.BufferGeometry(), new THREE.MeshBasicMaterial({
         color, transparent: true, opacity: 0.16, blending: THREE.AdditiveBlending, depthWrite: false,
@@ -784,7 +1013,7 @@ export class Galaxy {
       pts.frustumCulled = false;
       this.flows.add(tube, pts);
       const rnd = seeded('flow' + p.id + dir);
-      return { dir, curve, tube, pts, max, phases: Array.from({ length: max }, () => rnd()), radius: -1, speed: 0.1, level: 0, visibleCount: 0 };
+      return { dir, curve, samples, tube, pts, max, phases: Array.from({ length: max }, () => rnd()), radius: -1, speed: 0.1, level: 0, visibleCount: 0 };
     });
     return { id: p.id, key, lanes };
   }
@@ -800,7 +1029,14 @@ export class Galaxy {
   animateFlows(t) {
     this.flows.visible = this.settings.flows !== false;
     if (!this.flows.visible) return;
-    if (this.planetsMoving) this.updateFlows(); // re-anchor lanes to gliding planets
+    // Re-anchor lanes to gliding planets a few times a second, not every frame (tube rebuilds are costly).
+    if (this.planetsMoving && t - (this.lastFlowAnchor || 0) > 0.2) {
+      this.lastFlowAnchor = t;
+      this.updateFlows();
+    } else if (!this.planetsMoving && this.flowsStale) {
+      this.updateFlows(); // final position after the glide
+    }
+    this.flowsStale = this.planetsMoving;
     const tmp = new THREE.Vector3();
     for (const f of this.flowList.values()) {
       const p = this.planets.get(f.id);
@@ -815,8 +1051,11 @@ export class Galaxy {
         for (let i = 0; i < lane.visibleCount; i++) {
           let u = (lane.phases[i] + t * lane.speed) % 1;
           if (lane.dir === 'out') u = 1 - u; // curve runs core -> planet; outbound travels back
-          lane.curve.getPointAt(u, tmp);
-          arr[i * 3] = tmp.x; arr[i * 3 + 1] = tmp.y; arr[i * 3 + 2] = tmp.z;
+          // Points sampled once per curve (equal arc length): interpolate instead of getPointAt.
+          const sp = lane.samples, x = u * (sp.length - 1), k = Math.min(sp.length - 2, Math.floor(x)), w = x - k;
+          arr[i * 3] = sp[k].x + (sp[k + 1].x - sp[k].x) * w;
+          arr[i * 3 + 1] = sp[k].y + (sp[k + 1].y - sp[k].y) * w;
+          arr[i * 3 + 2] = sp[k].z + (sp[k + 1].z - sp[k].z) * w;
         }
         lane.pts.geometry.attributes.position.needsUpdate = true;
       }
@@ -980,7 +1219,6 @@ export class Galaxy {
     const router = isRouter(h);
     if (router && !p.station) {
       p.station = buildRouterStation(p.uniforms, this.glow);
-      p.station.group.rotation.z = (seeded('tilt' + p.id)() - 0.5) * 0.3;
       p.body.add(p.station.group);
     }
     p.core.visible = p.atmo.visible = !router;
@@ -1095,7 +1333,13 @@ export class Galaxy {
       m.pin.material.size = 5 + 5 * m.lin;   // screen pixels
       m.pout.material.size = 5 + 5 * m.lout;
       const state = x.up == null ? tr('нет данных', 'no data') : x.up ? '' : tr('отключён', 'down');
-      m.el.innerHTML = `<span class="sat-ic">⇄</span>${esc(x.name)} <b>${state || `↓${bpsShort(x.in)} ↑${bpsShort(x.out)}`}</b>${x.speed ? ` <span>${bps(x.speed)}</span>` : ''}`;
+      const client = x.clients?.length ? ` → ${esc(x.clients.join(', '))}` : '';
+      if (x.virtual) {
+        m.el.innerHTML = `<span class="sat-ic">⇄</span>${tr('порт не указан', 'port not set')}${client}`;
+      } else {
+        const name = `${x.guess ? '≈' : ''}${esc(x.name)}`;
+        m.el.innerHTML = `<span class="sat-ic">⇄</span>${name}${client} <b>${state || `↓${bpsShort(x.in)} ↑${bpsShort(x.out)}`}</b>${x.speed ? ` <span>${bps(x.speed)}</span>` : ''}`;
+      }
       m.el.style.setProperty('--c', m.state === 'up' ? '#7fd0f0' : m.state === 'down' ? '#ff6b5e' : '#6b6a64');
     });
   }
@@ -1184,7 +1428,7 @@ export class Galaxy {
         : m.state === 'down' ? (Math.sin(t * 7 + m.blinkPhase) > 0 ? 1 : 0.15) : 0.35;
       m.light.material.opacity = blink * p.dim;
       const show = moonLabels || this.hoverMoon === m.key;
-      if (show !== m.shown) { m.shown = show; m.el.classList.toggle('hidden', !show); }
+      if (show !== m.shown) { m.shown = show; m.el.classList.toggle('hidden', !show); m.label.visible = show; }
       const active = on && m.active;
       m.laneIn.visible = m.pin.visible = active && m.rin > 0;
       m.laneOut.visible = m.pout.visible = active && m.rout > 0;
@@ -1342,7 +1586,11 @@ export class Galaxy {
       p.el.classList.toggle('active', sel === p.id);
       p.userEl.classList.toggle('hidden', !p.visible || !p.hasUsers || this.settings.users === false || (!!sel && sel !== p.id));
       const satLabels = p.visible && (sel === p.id || this.hovered === p.id || this.settings.satLabels === 'all');
-      for (const s of p.satList) s.el.classList.toggle('hidden', !satLabels || (!!sel && sel !== p.id));
+      for (const s of p.satList) {
+        const show = satLabels && !(!!sel && sel !== p.id);
+        s.el.classList.toggle('hidden', !show);
+        s.label.visible = show; // hidden labels skip the per-frame CSS2D pass
+      }
     }
   }
 
@@ -1542,7 +1790,7 @@ export class Galaxy {
   }
 
   frame() {
-    const dt = Math.min(this.clock.getDelta(), 0.05);
+    const dt = Math.min(this.clock.getDelta(), 0.2); // low frame caps keep real-time speed
     const t = this.clock.elapsedTime;
     this.starUniforms.uTime.value = t;
     this.dustUniforms.uTime.value = t;
@@ -1563,7 +1811,7 @@ export class Galaxy {
       this.camera.position.lerpVectors(f.fromP, f.toP, k);
       if (f.t >= 1) this.flight = null;
     }
-    this.controls.update();
+    this.controls.update(dt); // dt keeps auto-rotation speed independent of the frame cap
 
     // Planets glide to new positions (state layout changes); the camera follows the focused one.
     this.planetsMoving = false;
@@ -1597,11 +1845,10 @@ export class Galaxy {
       p.core.rotation.y += dt * p.spin;
       if (p.station?.group.visible) {
         const st = p.station;
-        st.group.rotation.y += dt * p.spin * 0.6;
         st.ringPivot.rotation.y = t * 0.25;
         for (const m of st.mats) m.opacity = p.dim;
         // Alarm tints the ring red like the planet shader does for the hull.
-        st.ringMat.emissive.copy(st.ringBase).lerp(new THREE.Color('#ff2a1a'), Math.min(1, p.uniforms.uAlarm.value * 2));
+        st.ringMat.emissive.copy(st.ringBase).lerp(ALARM_RED, Math.min(1, p.uniforms.uAlarm.value * 2));
         st.beacon.material.opacity = st.dead ? 0 : (Math.sin(t * 3 + p.spin * 40) > 0.6 ? 1 : 0.1) * p.dim;
       }
       p.atmoU.uStrength.value = p.atmoBase * p.dim;
@@ -1631,7 +1878,8 @@ export class Galaxy {
         m.mesh.material.uniforms.uTime.value = t;
         m.glow.material.opacity = m.glowBase * p.dim;
         const show = moonLabels || this.hoverMoon === m.key;
-        if (show !== m.shown) { m.shown = show; m.el.classList.toggle('hidden', !show); }
+        if (show !== m.shown) { m.shown = show; m.el.classList.toggle('hidden', !show); m.label.visible = show; }
+        if (show) this.orbitLabels = true;
       }
     }
 
@@ -1644,7 +1892,15 @@ export class Galaxy {
     }
 
     this.composer.render();
-    this.labelRenderer.render(this.scene, this.camera);
+    // HTML labels: re-positioned only when the camera or planets moved, or orbiting labels
+    // (satellites / moons of the focused host) are shown; otherwise a few times a second.
+    this.frameNo += 1;
+    const satLabelsShown = [...this.planets.values()].some((p) => p.satList.some((s) => s.label.visible && p.group.visible));
+    if (this.cameraMoved || this.planetsMoving || this.orbitLabels || satLabelsShown || this.frameNo % 8 === 0) {
+      this.labelRenderer.render(this.scene, this.camera);
+    }
+    this.cameraMoved = false;
+    this.orbitLabels = false;
     if (t - (this.lastDeclutter || 0) > 0.25) {
       this.lastDeclutter = t;
       this.declutter();

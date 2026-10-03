@@ -27,6 +27,7 @@ const DEFAULTS = {
   groups: [],
   search: '',
   refresh: 30,
+  fps: 30, // idle frame cap; the view runs at 60 while it moves
   leftCollapsed: false,
 };
 
@@ -70,6 +71,7 @@ window.galaxy = galaxy; // handy for debugging from the browser console
 const panel = new DetailPanel($('#detail'), $('#overlay'), {
   onClose: () => select(null),
   onService: (id, kind) => service.open(id, kind),
+  onSelect: (id) => select(id),
 });
 
 buildSettings();
@@ -129,6 +131,9 @@ function buildSettings() {
   const satLabels = $('#satLabels');
   satLabels.value = settings.satLabels;
   satLabels.addEventListener('change', () => update({ satLabels: satLabels.value }));
+  const fps = $('#fps');
+  fps.value = String(settings.fps);
+  fps.addEventListener('change', () => update({ fps: Number(fps.value) }));
   const refresh = $('#refresh');
   refresh.value = String(settings.refresh);
   refresh.addEventListener('change', () => update({ refresh: Number(refresh.value) }));
@@ -148,6 +153,12 @@ function buildSettings() {
     applyLayout();
   });
   $('#home').addEventListener('click', () => select(null));
+  $('#centers').addEventListener('click', (e) => {
+    const b = e.target.closest('[data-center]');
+    if (!b) return;
+    galaxy.setHome(b.dataset.center);
+    renderCenters();
+  });
 
   // Legend.
   $('#legend-os').innerHTML = OS_LEGEND.map((id) => {
@@ -223,6 +234,7 @@ async function poll() {
     data.groups = [...new Set(data.hosts.flatMap((h) => h.groups))].sort();
     overview = data;
     galaxy.setData(data.hosts, settings);
+    renderCenters();
     alerts.update(data.hosts);
     summary.update(data.zabbix, data.hosts);
     showSummary();
@@ -295,6 +307,23 @@ function hashHost() {
   return m ? m[1] : null;
 }
 
+// Top buttons: the whole picture, the Zabbix galaxy and every system around an uplink
+// with clients (MikroTik, ...). New systems appear here on their own.
+function renderCenters() {
+  const nav = $('#centers');
+  const systems = (galaxy.systems || []).filter((s) => !s.depth);
+  nav.classList.toggle('hidden', !systems.length);
+  if (!systems.length) return;
+  const byId = new Map(overview.hosts.map((h) => [h.id, h]));
+  const btn = (key, label, title) => `<button data-center="${key}" class="${galaxy.homeKey === key ? 'active' : ''}" title="${esc(title)}">${label}</button>`;
+  nav.innerHTML = btn('all', `◎ ${tr('Всё', 'All')}`, tr('Показать всё', 'Show everything'))
+    + btn('zabbix', '✦ Zabbix', tr('Галактика Zabbix', 'The Zabbix galaxy'))
+    + systems.map((s) => {
+      const h = byId.get(s.id);
+      return btn(s.id, `⌬ ${esc(h?.name || s.id)}`, tr(`${h?.name} и его клиенты`, `${h?.name} and its clients`));
+    }).join('');
+}
+
 function select(id, opts) {
   selected = id;
   galaxy.select(id);
@@ -323,7 +352,11 @@ function hoverCard(h, px) {
     return;
   }
   const st = STATE[h.state];
-  const rows = h.state === 'disabled' ? '' : `
+  const g = h.probe && h.ping;
+  const rows = h.state === 'disabled' ? '' : g ? `
+    <div class="hc-m"><div>ICMP ping<b>${g.ok == null ? '—' : g.ok ? tr('отвечает', 'up') : tr('нет ответа', 'no reply')}</b></div>
+      <div>${tr('Отклик', 'RTT')}<b>${g.rtt == null ? '—' : `${(g.rtt * 1000).toFixed(1)} ${tr('мс', 'ms')}`}</b></div>
+      <div>${tr('Потери', 'Loss')}<b>${pct(g.loss)}</b></div></div>` : `
     <div class="hc-m">${['cpu', 'mem', 'disk'].map((m) => `<div><i style="--c:${METRIC[m].color}"></i>${METRIC[m].label}<b>${pct(h[m])}</b></div>`).join('')}
       <div><i style="--c:#3987e5"></i>Вход<b>↓ ${bps(h.net_in)}</b></div>
       <div><i style="--c:#d95926"></i>Выход<b>↑ ${bps(h.net_out)}</b></div>

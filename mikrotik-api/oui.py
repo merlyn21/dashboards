@@ -25,7 +25,7 @@ class Vendors:
         return self
 
     def lookup(self, mac):
-        """Maker for a MAC like 'AC:BA:C0:1E:8C:E8'. Randomized (locally administered) MACs have no maker."""
+        """Maker for a MAC like 'aa:bb:cc:11:22:33'. Randomized (locally administered) MACs have no maker."""
         hexes = re.sub(r"[^0-9A-Fa-f]", "", mac or "").upper()
         if len(hexes) < 6:
             return None
